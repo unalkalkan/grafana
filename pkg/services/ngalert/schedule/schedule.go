@@ -162,41 +162,45 @@ type schedule struct {
 
 	notifier Notifier
 	metrics  *metrics.Metrics
+
+	minRuleIntervalSeconds int64
 }
 
 // SchedulerCfg is the scheduler configuration.
 type SchedulerCfg struct {
-	C               clock.Clock
-	BaseInterval    time.Duration
-	Logger          log.Logger
-	EvalAppliedFunc func(models.AlertRuleKey, time.Time)
-	MaxAttempts     int64
-	StopAppliedFunc func(models.AlertRuleKey)
-	Evaluator       eval.Evaluator
-	RuleStore       store.RuleStore
-	InstanceStore   store.InstanceStore
-	Notifier        Notifier
-	Metrics         *metrics.Metrics
+	C                      clock.Clock
+	BaseInterval           time.Duration
+	Logger                 log.Logger
+	EvalAppliedFunc        func(models.AlertRuleKey, time.Time)
+	MaxAttempts            int64
+	StopAppliedFunc        func(models.AlertRuleKey)
+	Evaluator              eval.Evaluator
+	RuleStore              store.RuleStore
+	InstanceStore          store.InstanceStore
+	Notifier               Notifier
+	Metrics                *metrics.Metrics
+	MinRuleIntervalSeconds int64
 }
 
 // NewScheduler returns a new schedule.
 func NewScheduler(cfg SchedulerCfg, dataService *tsdb.Service) *schedule {
 	ticker := alerting.NewTicker(cfg.C.Now(), time.Second*0, cfg.C, int64(cfg.BaseInterval.Seconds()))
 	sch := schedule{
-		registry:        alertRuleRegistry{alertRuleInfo: make(map[models.AlertRuleKey]alertRuleInfo)},
-		maxAttempts:     cfg.MaxAttempts,
-		clock:           cfg.C,
-		baseInterval:    cfg.BaseInterval,
-		log:             cfg.Logger,
-		heartbeat:       ticker,
-		evalAppliedFunc: cfg.EvalAppliedFunc,
-		stopAppliedFunc: cfg.StopAppliedFunc,
-		evaluator:       cfg.Evaluator,
-		ruleStore:       cfg.RuleStore,
-		instanceStore:   cfg.InstanceStore,
-		dataService:     dataService,
-		notifier:        cfg.Notifier,
-		metrics:         cfg.Metrics,
+		registry:               alertRuleRegistry{alertRuleInfo: make(map[models.AlertRuleKey]alertRuleInfo)},
+		maxAttempts:            cfg.MaxAttempts,
+		clock:                  cfg.C,
+		baseInterval:           cfg.BaseInterval,
+		log:                    cfg.Logger,
+		heartbeat:              ticker,
+		evalAppliedFunc:        cfg.EvalAppliedFunc,
+		stopAppliedFunc:        cfg.StopAppliedFunc,
+		evaluator:              cfg.Evaluator,
+		ruleStore:              cfg.RuleStore,
+		instanceStore:          cfg.InstanceStore,
+		dataService:            dataService,
+		notifier:               cfg.Notifier,
+		metrics:                cfg.Metrics,
+		minRuleIntervalSeconds: cfg.MinRuleIntervalSeconds,
 	}
 	return &sch
 }
@@ -278,9 +282,15 @@ func (sch *schedule) Ticker(grafanaCtx context.Context, stateManager *state.Mana
 
 				if invalidInterval {
 					// this is expected to be always false
-					// give that we validate interval during alert rule updates
+					// given that we validate interval during alert rule updates
 					sch.log.Debug("alert rule with invalid interval will be ignored: interval should be divided exactly by scheduler interval", "key", key, "interval", time.Duration(item.IntervalSeconds)*time.Second, "scheduler interval", sch.baseInterval)
 					continue
+				}
+
+				// enforce minimum evaluation interval
+				if item.IntervalSeconds < sch.minRuleIntervalSeconds {
+					// sch.log.Debug("alert rule interval will be ignored (fallback to minimum interval): interval should be not be lower than the minimun evaluation", "key", key, "rule interval", item.IntervalSeconds, "mimimum rule evaluation interval", sch.minRuleIntervalSeconds)
+					item.IntervalSeconds = sch.minRuleIntervalSeconds
 				}
 
 				itemFrequency := item.IntervalSeconds / int64(sch.baseInterval.Seconds())
